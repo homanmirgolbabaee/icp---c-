@@ -20,16 +20,22 @@ struct PointDistance
   template <typename T>
   bool operator()(const T* const transform, T* residual) const
   {
-    T p[3];
-    ceres::AngleAxisRotatePoint(transform, source_.data(), p);
-    p[0] += transform[3];
-    p[1] += transform[4];
-    p[2] += transform[5];
+        // Convert source_ from Eigen::Vector3d to an array of T
+        T source[3];
+        source[0] = T(source_[0]);
+        source[1] = T(source_[1]);
+        source[2] = T(source_[2]);
 
-    residual[0] = p[0] - T(target_[0]);
-    residual[1] = p[1] - T(target_[1]);
-    residual[2] = p[2] - T(target_[2]);
-    return true;
+        T p[3];
+        ceres::AngleAxisRotatePoint(transform, source, p);
+        p[0] += transform[3]; // tx 
+        p[1] += transform[4]; // ty
+        p[2] += transform[5]; // tz   
+
+        residual[0] = p[0] - T(target_[0]);
+        residual[1] = p[1] - T(target_[1]);
+        residual[2] = p[2] - T(target_[2]);
+        return true;
   }
 
   static ceres::CostFunction* Create(const Eigen::Vector3d& source, const Eigen::Vector3d& target)
@@ -46,7 +52,9 @@ struct PointDistance
 
 Registration::Registration(std::string cloud_source_filename, std::string cloud_target_filename)
 {
+  std::cout << "Loading source point cloud..." << std::endl;
   open3d::io::ReadPointCloud(cloud_source_filename, source_ );
+  std::cout << "Loading target point cloud..." << std::endl;
   open3d::io::ReadPointCloud(cloud_target_filename, target_ );
   Eigen::Vector3d gray_color;
   source_for_icp_ = source_;
@@ -94,26 +102,29 @@ void Registration::execute_icp_registration(double threshold, int max_iteration,
   //Remember to update transformation_ class variable, you can use source_for_icp_ to store transformed 3d points.
   ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+    std::cout << "Starting ICP registration..." << std::endl;
+    double prev_rmse = std::numeric_limits<double>::max();
+    for (int i = 0; i < max_iteration; ++i) {
+        std::cout << "Iteration: " << i << std::endl;
+        auto [source_indices, target_indices, rmse] = find_closest_point(threshold);
+        std::cout << "RMSE: " << rmse << std::endl;
 
-  double prev_rmse = std::numeric_limits<double>::max();
-  for (int i = 0; i < max_iteration; ++i) {
-    auto [source_indices, target_indices, rmse] = find_closest_point(threshold);
+        Eigen::Matrix4d transformation;
+        if (mode == "svd") {
+            transformation = get_svd_icp_transformation(source_indices, target_indices);
+        } else if (mode == "lm") {
+            transformation = get_lm_icp_registration(source_indices, target_indices);
+        }
 
-    Eigen::Matrix4d transformation;
-    if (mode == "svd") {
-      transformation = get_svd_icp_transformation(source_indices, target_indices);
-    } else if (mode == "lm") {
-      transformation = get_lm_icp_registration(source_indices, target_indices);
+        source_for_icp_.Transform(transformation);
+        transformation_ = transformation * transformation_;
+
+        if (fabs(prev_rmse - rmse) < relative_rmse) {
+            std::cout << "Convergence reached." << std::endl; 
+            break;
+        }
+        prev_rmse = rmse;
     }
-
-    source_for_icp_.Transform(transformation);
-    transformation_ = transformation * transformation_;
-
-    if (fabs(prev_rmse - rmse) < relative_rmse) {
-      break;
-    }
-    prev_rmse = rmse;
-  }
 
 
 
@@ -303,5 +314,4 @@ void Registration::save_merged_cloud(std::string filename)
   open3d::geometry::PointCloud merged = target_clone+source_clone;
   open3d::io::WritePointCloud(filename, merged );
 }
-
 
